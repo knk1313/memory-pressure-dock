@@ -136,55 +136,89 @@ final class ThroughputSampler {
     }
 }
 
-/// 「接続を確認」ボタン用。押したときだけ1回リクエストする。
-enum ConnectivityCheck {
-    static let target = URL(string: "https://www.apple.com/library/test/success.html")!
-    static let timeout: TimeInterval = 5
+/// 「接続を確認」ボタン用。押したときだけ、macOS 標準の `networkQuality` で下り・上りの回線速度を測る。
+/// 測定先は Apple のサーバー（networkQuality の既定）。1回で数百MBの通信が発生する。
+enum SpeedTest {
+    static let tool = "/usr/bin/networkQuality"
+    static let maxRuntime = 10          // networkQuality に渡す最大の測定時間（秒）
+    static let timeout: TimeInterval = 30  // これを超えたら打ち切る（設定の取得や接続で詰まったとき）
 
-    enum Outcome {
-        case success(milliseconds: Int, httpStatus: Int)
+    struct Result: Equatable {
+        var downBitsPerSecond: Double
+        var upBitsPerSecond: Double
+        var baseRTTMilliseconds: Double?
+        var endpoint: String?
+    }
+
+    enum Outcome: Equatable {
+        case success(Result)
         case failure(String)
         case timeout
     }
 
-    static func run(url: URL = target, timeout: TimeInterval = timeout, completion: @escaping (Outcome) -> Void) {
-        let config = URLSessionConfiguration.ephemeral
-        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.urlCache = nil
-        config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout
-        config.waitsForConnectivity = false
-        let session = URLSession(configuration: config)
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData, timeoutInterval: timeout)
-        request.httpMethod = "GET"
-        let start = DispatchTime.now()
-        let task = session.dataTask(with: request) { _, response, error in
-            let ms = Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
-            let outcome: Outcome
-            if let error = error as? URLError {
-                switch error.code {
-                case .timedOut: outcome = .timeout
-                case .notConnectedToInternet: outcome = .failure("インターネットに接続されていません")
-                case .cannotFindHost, .dnsLookupFailed: outcome = .failure("名前解決に失敗しました")
-                case .cannotConnectToHost: outcome = .failure("測定先に接続できません")
-                case .networkConnectionLost: outcome = .failure("通信が途中で切れました")
-                case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
-                     .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot:
-                    outcome = .failure("安全な接続を確立できません")
-                default: outcome = .failure(error.localizedDescription)
-                }
-            } else if let error {
-                outcome = .failure(error.localizedDescription)
-            } else if let http = response as? HTTPURLResponse {
-                outcome = (200..<400).contains(http.statusCode)
-                    ? .success(milliseconds: ms, httpStatus: http.statusCode)
-                    : .failure("HTTP \(http.statusCode) が返りました")
-            } else {
-                outcome = .failure("応答を解釈できません")
-            }
-            session.finishTasksAndInvalidate()
-            DispatchQueue.main.async { completion(outcome) }
+    private static var running: Process?
+
+    static func cancel() { running?.terminate() }
+
+    static func run(completion: @escaping (Outcome) -> Void) {
+        guard FileManager.default.isExecutableFile(atPath: tool) else {
+            completion(.failure("networkQuality が見つかりません")); return
         }
-        task.resume()
+        DispatchQueue.global(qos: .utility).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: tool)
+            process.arguments = ["-c", "-M", String(maxRuntime)]
+            let out = Pipe()
+            process.standardOutput = out
+            process.standardError = Pipe()
+            var timedOut = false
+            let watchdog = DispatchWorkItem { timedOut = true; process.terminate() }
+            do {
+                try process.run()
+            } catch {
+                DispatchQueue.main.async { completion(.failure("測定を開始できません")) }
+                return
+            }
+            DispatchQueue.main.async { running = process }
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            watchdog.cancel()
+            let outcome: Outcome = timedOut ? .timeout : parse(data, exitCode: process.terminationStatus)
+            DispatchQueue.main.async { running = nil; completion(outcome) }
+        }
+    }
+
+    /// networkQuality -c の JSON を読む。速度の単位は bit/s。
+    static func parse(_ data: Data, exitCode: Int32) -> Outcome {
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failure(exitCode == 0 ? "測定結果を読めません" : "測定に失敗しました（終了コード \(exitCode)）")
+        }
+        if json["error_code"] != nil || json["error_domain"] != nil {
+            return .failure(describeError(json))
+        }
+        guard let down = (json["dl_throughput"] as? NSNumber)?.doubleValue,
+              let up = (json["ul_throughput"] as? NSNumber)?.doubleValue else {
+            return .failure("測定結果に速度がありません")
+        }
+        return .success(Result(downBitsPerSecond: down, upBitsPerSecond: up,
+                               baseRTTMilliseconds: (json["base_rtt"] as? NSNumber)?.doubleValue,
+                               endpoint: json["test_endpoint"] as? String))
+    }
+
+    private static func describeError(_ json: [String: Any]) -> String {
+        let code = (json["error_code"] as? NSNumber)?.intValue
+        let domain = json["error_domain"] as? String ?? ""
+        if domain.contains("URL") || domain.contains("NSURLErrorDomain") {
+            switch code {
+            case -1009: return "インターネットに接続されていません"
+            case -1001: return "測定先が応答しません"
+            case -1003, -1006: return "名前解決に失敗しました"
+            case -1004: return "測定先に接続できません"
+            default: break
+            }
+        }
+        if let code { return "測定に失敗しました（\(domain) \(code)）" }
+        return "測定に失敗しました"
     }
 }

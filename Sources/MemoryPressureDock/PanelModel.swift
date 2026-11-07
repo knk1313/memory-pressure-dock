@@ -5,8 +5,8 @@ final class PanelModel: ObservableObject {
     enum ThroughputState { case measuring, unavailable, rate(ThroughputSampler.Rate) }
     enum CheckState {
         case idle
-        case measuring
-        case success(milliseconds: Int, httpStatus: Int)
+        case measuring(startedAt: Date)
+        case success(SpeedTest.Result)
         case failure(String)
         case timeout
     }
@@ -51,10 +51,10 @@ final class PanelModel: ObservableObject {
 
     func runConnectivityCheck() {
         if case .measuring = check { return }
-        check = .measuring
-        ConnectivityCheck.run { [weak self] outcome in
+        check = .measuring(startedAt: Date())
+        SpeedTest.run { [weak self] outcome in
             switch outcome {
-            case let .success(ms, status): self?.check = .success(milliseconds: ms, httpStatus: status)
+            case let .success(result): self?.check = .success(result)
             case let .failure(reason): self?.check = .failure(reason)
             case .timeout: self?.check = .timeout
             }

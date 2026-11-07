@@ -52,22 +52,25 @@ final class SystemReadingTests: XCTestCase {
     }
 }
 
-final class ConnectivityCheckTests: XCTestCase {
-    private func run(_ url: String, timeout: TimeInterval) -> ConnectivityCheck.Outcome? {
-        let done = expectation(description: "check")
-        var result: ConnectivityCheck.Outcome?
-        ConnectivityCheck.run(url: URL(string: url)!, timeout: timeout) { result = $0; done.fulfill() }
-        wait(for: [done], timeout: timeout + 5)
-        return result
+final class SpeedTestParsingTests: XCTestCase {
+    func testParsesThroughput() {
+        let json = #"{"base_rtt":13.4,"dl_throughput":87642376,"ul_throughput":114280944,"test_endpoint":"jptyo5-edge.aaplimg.com"}"#
+        let outcome = SpeedTest.parse(Data(json.utf8), exitCode: 0)
+        XCTAssertEqual(outcome, .success(.init(downBitsPerSecond: 87642376, upBitsPerSecond: 114280944,
+                                               baseRTTMilliseconds: 13.4, endpoint: "jptyo5-edge.aaplimg.com")))
     }
 
-    func testUnresolvableHostIsFailure() {
-        guard case .failure(let reason)? = run("https://nonexistent.invalid/", timeout: 5) else { return XCTFail() }
-        XCTAssertFalse(reason.isEmpty)
+    func testOfflineErrorIsFailure() {
+        let json = #"{"error_code":-1009,"error_domain":"NSURLErrorDomain"}"#
+        XCTAssertEqual(SpeedTest.parse(Data(json.utf8), exitCode: 1), .failure("インターネットに接続されていません"))
     }
 
-    func testUnroutableAddressIsTimeout() {
-        // 10.255.255.1 は通常応答しないアドレスで、接続の確立を待ち続ける
-        guard case .timeout? = run("https://10.255.255.1/", timeout: 1) else { return XCTFail() }
+    func testBrokenOutputIsFailure() {
+        guard case .failure = SpeedTest.parse(Data("oops".utf8), exitCode: 1) else { return XCTFail() }
+    }
+
+    func testFormatsMbps() {
+        XCTAssertEqual(Format.bitsPerSecond(87_642_376), "87.6 Mbps")
+        XCTAssertEqual(Format.bitsPerSecond(114_280_944), "114 Mbps")
     }
 }

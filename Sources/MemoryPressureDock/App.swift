@@ -24,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pressureMonitor.start()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        SpeedTest.cancel()
+    }
+
     private func apply(_ level: PressureLevel) {
         model.pressure = level
         guard let button = statusItem.button else { return }

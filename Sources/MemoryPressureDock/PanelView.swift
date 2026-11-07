@@ -8,6 +8,10 @@ enum Format {
     static func rate(_ bytesPerSecond: Double) -> String {
         format(Int64(bytesPerSecond.rounded()), style: .decimal) + "/秒"
     }
+    static func bitsPerSecond(_ bps: Double) -> String {
+        let mbps = bps / 1_000_000
+        return mbps >= 100 ? String(format: "%.0f Mbps", mbps) : String(format: "%.1f Mbps", mbps)
+    }
     /// 計測した 0 を「Zero KB」ではなく数字で出す（「取得できません」と区別するため）。
     private static func format(_ bytes: Int64, style: ByteCountFormatter.CountStyle) -> String {
         let f = ByteCountFormatter()
@@ -68,8 +72,6 @@ struct PanelView: View {
                         .accessibilityElement(children: .combine)
                     }
                 }
-                Text(processFootnote(sample)).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 6) { ProgressView().controlSize(.small); Text("集計中…").foregroundStyle(.secondary) }
             }
@@ -80,14 +82,6 @@ struct PanelView: View {
         guard let m = model.memory else { return "集計中…" }
         if m.used == nil && m.total == nil { return "取得できません" }
         return "\(Format.bytes(m.used)) / \(Format.bytes(m.total))"
-    }
-
-    private func processFootnote(_ s: ProcessSample) -> String {
-        var text = "使用量の多い順で、負荷の原因とは限りません。アプリ内の子プロセスはアプリごとに合算しています。"
-        if s.unreadableCount > 0 {
-            text += "権限がないため \(s.unreadableCount) 件のプロセス（システム・他ユーザー）は集計に含まれていません。"
-        }
-        return text
     }
 
     // MARK: ネットワーク
@@ -102,7 +96,7 @@ struct PanelView: View {
             Text("現在流れているデータ量です。回線の最大速度ではありません。")
                 .font(.caption).foregroundStyle(.secondary)
 
-            HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button("接続を確認") { model.runConnectivityCheck() }
                     .disabled(isChecking)
                 checkResult
@@ -139,30 +133,32 @@ struct PanelView: View {
     }
 
     @ViewBuilder private var checkResult: some View {
-        let host = ConnectivityCheck.target.host ?? ""
         switch model.check {
         case .idle:
-            Text("測定先: \(host)").font(.caption).foregroundStyle(.secondary)
-        case .measuring:
-            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("測定中… (\(host))").font(.caption) }
-        case let .success(ms, status):
-            VStack(alignment: .leading, spacing: 2) {
-                Text("応答時間 \(ms) ms").fontWeight(.medium)
-                Text("測定先: \(host) · HTTP \(status)").font(.caption).foregroundStyle(.secondary)
+            Text("下り・上りの回線速度を約\(SpeedTest.maxRuntime)秒かけて測ります（Apple のサーバーへ数百MBを送受信します）")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .measuring(let startedAt):
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("測定中… \(Int(context.date.timeIntervalSince(startedAt)))秒").monospacedDigit()
+                }
             }
-            .accessibilityElement(children: .combine)
+        case .success(let r):
+            VStack(alignment: .leading, spacing: 6) {
+                row("下り速度", Format.bitsPerSecond(r.downBitsPerSecond))
+                row("上り速度", Format.bitsPerSecond(r.upBitsPerSecond))
+                row("応答時間", r.baseRTTMilliseconds.map { "\(Int($0.rounded())) ms" } ?? "取得できません")
+                Text("測定先: \(r.endpoint ?? "取得できません")").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
         case .failure(let reason):
-            VStack(alignment: .leading, spacing: 2) {
-                Text("失敗: \(reason)").foregroundStyle(.red)
-                Text("測定先: \(host)").font(.caption).foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
+            Text("失敗: \(reason)").foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
         case .timeout:
-            VStack(alignment: .leading, spacing: 2) {
-                Text("タイムアウト（\(Int(ConnectivityCheck.timeout))秒以内に応答なし）").foregroundStyle(.orange)
-                Text("測定先: \(host)").font(.caption).foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
+            Text("タイムアウト（\(Int(SpeedTest.timeout))秒以内に終わりませんでした）").foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

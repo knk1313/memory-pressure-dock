@@ -26,7 +26,7 @@ enum Diagnostics {
         if case .rate(let r) = t.sample(interface: status?.interfaceName) {
             print("down:", Format.rate(r.down), " up:", Format.rate(r.up), " (\(r.interface))")
         }
-        ConnectivityCheck.run { outcome in print("check:", outcome); sem.signal() }
+        SpeedTest.run { outcome in print("check:", outcome); sem.signal() }
         while sem.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     }
 }
@@ -44,6 +44,10 @@ extension Diagnostics {
         model.panelDidOpen()
         if check { model.runConnectivityCheck() }
         RunLoop.main.run(until: Date().addingTimeInterval(4))
+        let deadline = Date().addingTimeInterval(SpeedTest.timeout + 5)
+        while case .measuring = model.check, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        }
         let host = NSHostingView(rootView: PanelView(model: model, onQuit: {}))
         host.frame.size = host.fittingSize
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)

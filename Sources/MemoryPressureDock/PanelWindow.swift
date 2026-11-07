@@ -68,7 +68,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) { close(reason: "resignKey") }
 
-    /// 上端をメニューバーの直下に固定して、中身の大きさに合わせる。
+    /// 上端をメニューバーの直下に固定して、中身の大きさに合わせる。左右は画面からはみ出さないようにずらす。
     private func layout() {
         guard let button = anchor, let buttonWindow = button.window else { return }
         let itemFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
@@ -77,10 +77,11 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         let ideal = hostingView.fittingSize
         let width = ideal.width
-        let height = min(ideal.height, visible.height - margin * 2)
-        var x = itemFrame.midX - width / 2
+        let height = min(ideal.height, visible.height - margin)
+        // ほかのメニューと同じく、メニューバーの直下に付け、左の端をアイコンの左の端にそろえる
+        var x = itemFrame.minX
         x = max(visible.minX + margin, min(x, visible.maxX - width - margin))
-        let top = min(itemFrame.minY, visible.maxY) - margin
+        let top = min(itemFrame.minY, visible.maxY)
         panel.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
     }
 }

@@ -1,0 +1,8 @@
+# 依存の更新を、週に1回PRで届ける。
+# Swift の外部パッケージはないので、GitHub Actions だけを対象にする。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
